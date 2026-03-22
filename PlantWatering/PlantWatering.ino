@@ -6,138 +6,198 @@
 #include <Wire.h>
 #include <WiFiClient.h>
 #include <BlynkSimpleEsp32.h>
-#include <DHTesp.h>  // ✅ Dùng thư viện mới
+#include <wifiConfig.h>
 
 // ====== PIN ======
 #define soilSensor 33
 #define rainSensor 32
-#define relay      4
-#define DHTPIN     25
+#define relay 4
+#define IN1 26
+#define IN2 27
 
-DHTesp dht;  // ✅ Khai báo kiểu mới
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 BlynkTimer timer;
 
-char auth[] = "HoRDoN2MBjAq2DN-3Qsj6oTgs5hLca8I";
-char ssid[] = "FakeTaxi";
-char pass[] = "0123456789";
+char auth[] = BLYNK_AUTH_TOKEN;
 
-bool manualControl = false;
-float lastTemp = 25.0;
-float lastHum  = 60.0;
+// ===== MODE + CONTROL =====
+bool manualMode = false;      // V6
+bool manualActive = false;    // override trong AUTO
+bool manualState = false;     // ON/OFF
+unsigned long manualTime = 0;
 
-// ================== HÀM ĐỌC DHT AN TOÀN ==================
-void readDHT() {
-  for (int i = 0; i < 5; i++) {
-    TempAndHumidity data = dht.getTempAndHumidity(); // ✅ Đọc 1 lần duy nhất
-    float t = data.temperature;
-    float h = data.humidity;
+#define MANUAL_TIMEOUT 5000 // 5 giây
 
-    if (!isnan(t) && !isnan(h) && t > 0 && t < 80 && h > 0 && h <= 100) {
-      lastTemp = t;
-      lastHum  = h;
-      Serial.print("✅ Temp: "); Serial.print(lastTemp);
-      Serial.print("C  Hum: "); Serial.print(lastHum);
-      Serial.print("%  (lan thu: "); Serial.print(i + 1); Serial.println(")");
-      return;
-    }
-
-    Serial.print("⚠ Lan thu "); Serial.print(i + 1); Serial.println(" that bai...");
-    delay(1000); // DHTesp cần 1 giây
-  }
-
-  Serial.println("❌ DHT11 that bai sau 5 lan - Giu gia tri cu");
-}
+// ===== PUMP STATE =====
+bool pumpState = false;
+bool lastPumpState = false;
 
 // ================== SETUP ==================
 void setup() {
+
   Serial.begin(115200);
 
-  pinMode(relay, OUTPUT);
-  pinMode(rainSensor, INPUT);
-  digitalWrite(relay, HIGH);
-
-  // ✅ Khởi động DHTesp
-  dht.setup(DHTPIN, DHTesp::DHT11);
-  Serial.println("DHT started...");
-  delay(3000);
-
-  Serial.println("=== Test DHT truoc WiFi ===");
-  readDHT();
+  wifiConfig.begin();
 
   lcd.init();
   lcd.backlight();
-  lcd.setCursor(1, 0);
+
+  pinMode(relay, OUTPUT);
+  pinMode(rainSensor, INPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+
+  digitalWrite(relay, HIGH);
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+
+  lcd.setCursor(1,0);
   lcd.print("System Loading");
 
-  Blynk.begin(auth, ssid, pass, "blynk.cloud", 80);
-
-  Serial.println("=== Test DHT sau WiFi ===");
-  readDHT();
-
+  delay(2000);
   lcd.clear();
-  timer.setInterval(5000L, readSensors);
+
+  // ⏳ đợi WiFi
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Blynk.config(auth);
+    Blynk.connect();
+    Serial.println("Blynk connected!");
+  } else {
+    Serial.println("No WiFi");
+  }
+
+  timer.setInterval(2000L, readSensors);
 }
 
 // ================== ĐỌC CẢM BIẾN ==================
 void readSensors() {
 
-  int raw  = analogRead(soilSensor);
+  int raw = analogRead(soilSensor);
   int soil = map(raw, 3200, 1200, 0, 100);
-  soil     = constrain(soil, 0, 100);
+  soil = constrain(soil, 0, 100);
 
   int rain = digitalRead(rainSensor);
 
-  readDHT();
-
-  Serial.print("Soil: "); Serial.print(soil); Serial.println("%");
-
+  // ===== LCD =====
   lcd.clear();
 
-  lcd.setCursor(0, 0);
-  lcd.print("Soil:"); lcd.print(soil); lcd.print("%");
+  lcd.setCursor(0,0);
+  lcd.print("Soil:");
+  lcd.print(soil);
+  lcd.print("%");
 
-  lcd.setCursor(9, 0);
-  lcd.print(lastTemp, 1); lcd.print("C");
+  lcd.setCursor(0,1);
 
-  lcd.setCursor(0, 1);
-  if (rain == LOW) {
-    lcd.print("Rain  ");
+  if(rain == LOW){
+    lcd.print("Rain ");
+
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
   } else {
     lcd.print("NoRain");
+
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
   }
 
-  Blynk.virtualWrite(V0, soil);
-  Blynk.virtualWrite(V2, lastTemp);
-  Blynk.virtualWrite(V3, lastHum);
-
-  if (!manualControl) {
-    if (soil < 30 && rain == HIGH) {
+  // ===== LOGIC BƠM =====
+  if(manualMode){
+    // 🎮 MANUAL MODE
+    if(manualState){
       digitalWrite(relay, LOW);
+      pumpState = true;
     } else {
       digitalWrite(relay, HIGH);
+      pumpState = false;
     }
+  }
+  else{
+    // 🤖 AUTO MODE
+
+    if(manualActive && millis() - manualTime < MANUAL_TIMEOUT){
+      // override
+      if(manualState){
+        digitalWrite(relay, LOW);
+        pumpState = true;
+      } else {
+        digitalWrite(relay, HIGH);
+        pumpState = false;
+      }
+    }
+    else{
+      manualActive = false;
+
+      if(soil < 30 && rain == HIGH){
+        digitalWrite(relay, LOW);
+        pumpState = true;
+      } else {
+        digitalWrite(relay, HIGH);
+        pumpState = false;
+      }
+    }
+  }
+
+  // ===== GỬI BLYNK =====
+  Blynk.virtualWrite(V0, soil);
+
+  // 🔥 SYNC TRẠNG THÁI BƠM
+  if(pumpState != lastPumpState){
+    Blynk.virtualWrite(V1, pumpState);
+    lastPumpState = pumpState;
   }
 }
 
-// ================== NÚT BLYNK ==================
-BLYNK_WRITE(V1) {
-  bool Relay = param.asInt();
-  manualControl = true;
+// ================== BLYNK ==================
 
-  if (Relay == 1) {
-    digitalWrite(relay, LOW);
-    lcd.setCursor(10, 1);
-    lcd.print("ON ");
+// 🎮 MODE
+BLYNK_WRITE(V6) {
+  manualMode = param.asInt();
+
+  lcd.clear();
+  lcd.setCursor(0,0);
+
+  if(manualMode){
+    lcd.print("Mode: MANUAL");
+    Serial.println("MANUAL MODE");
   } else {
+    lcd.print("Mode: AUTO");
+    Serial.println("AUTO MODE");
+  }
+}
+
+// 💧 BƠM
+BLYNK_WRITE(V1) {
+
+  int Relay = param.asInt();
+
+  manualActive = true;
+  manualTime = millis();
+
+  if(Relay == 1){
+    manualState = true;
+    digitalWrite(relay, LOW);
+    pumpState = true;
+  }
+  else{
+    manualState = false;
     digitalWrite(relay, HIGH);
-    lcd.setCursor(10, 1);
-    lcd.print("OFF");
+    pumpState = false;
   }
 }
 
 // ================== LOOP ==================
 void loop() {
-  Blynk.run();
+  wifiConfig.run();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Blynk.run();
+  }
+
   timer.run();
 }
