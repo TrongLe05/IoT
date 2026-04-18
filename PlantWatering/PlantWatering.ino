@@ -16,10 +16,6 @@
 #define IN1 26
 #define IN2 27
 #define DHT_PIN 25
-#define buzzer 14
-
-// ===== PWM BUZZER =====
-#define BUZZER_RESOLUTION 8
 
 LiquidCrystal_I2C lcd(0x27, 16, 4);
 BlynkTimer timer;
@@ -45,7 +41,7 @@ bool lastPumpState = false;
 int motorState = 0;
 
 // ===== DOOR STATE =====
-int doorState = 2;  // Mặc định: đã đóng
+int doorState = 1;  // Mặc định: mở
 
 // ===== MOTOR TIMER =====
 bool motorTimerActive = false;
@@ -56,6 +52,47 @@ unsigned long motorTimerStart = 0;
 bool lastRainState = true;
 bool isRaining = false;
 
+// chống nhiễu
+bool rainStableState = false;
+unsigned long lastRainChangeTime = 0;
+#define RAIN_DELAY 3000
+
+// ================== HANDLE RAIN ==================
+void handleRainMotor()
+{
+  int rain = digitalRead(rainSensor);
+  bool reading = (rain == LOW);
+
+  // nếu giá trị thay đổi → reset timer
+  if (reading != lastRainState)
+  {
+    lastRainChangeTime = millis();
+  }
+
+  // nếu ổn định đủ lâu → xác nhận trạng thái
+  if ((millis() - lastRainChangeTime) > RAIN_DELAY)
+  {
+    if (reading != rainStableState)
+    {
+      rainStableState = reading;
+      isRaining = rainStableState;
+
+      Blynk.virtualWrite(V9, isRaining ? "🌧 Đang mưa" : "☀ Không mưa");
+
+      Serial.print("[RAIN] Stable: ");
+      Serial.println(isRaining ? "MƯA" : "KHÔNG MƯA");
+
+      // nếu mưa → đóng mái
+      if (isRaining && !motorTimerActive && doorState != 2)
+      {
+        Serial.println("[RAIN] Mưa → Đóng mái");
+        motorStartWithTimer(2);
+      }
+    }
+  }
+
+  lastRainState = reading;
+}
 // ===== SOIL THRESHOLD =====
 int soilThreshold = 30;
 
@@ -134,41 +171,6 @@ void handleMotorTimer()
   }
 }
 
-void handleRainMotor()
-{
-  int rain = digitalRead(rainSensor);
-  bool currentRain = (rain == LOW);
-
-  // Cập nhật V9 khi trạng thái mưa thay đổi
-  if (currentRain != isRaining)
-  {
-    Blynk.virtualWrite(V9, currentRain ? "🌧 Đang mưa" : "☀ Không mưa");
-    Serial.print("[RAIN] Trạng thái thay đổi: ");
-    Serial.println(currentRain ? "Đang mưa" : "Không mưa");
-  }
-
-  isRaining = currentRain;
-
-  if (rain == LOW && lastRainState == true)
-  {
-    if (!motorTimerActive && doorState != 2)
-    {
-      Serial.println("[RAIN] Phát hiện mưa → Motor quay phải (ĐÓNG) 6s");
-      motorStartWithTimer(2);
-    }
-  }
-
-  lastRainState = (rain == LOW) ? false : true;
-}
-
-void playTone(int freq, int duration)
-{
-  ledcWriteTone(buzzer, freq);
-  delay(duration);
-  ledcWriteTone(buzzer, 0);
-  delay(50);
-}
-
 // ================== SETUP ==================
 void setup()
 {
@@ -187,20 +189,13 @@ void setup()
   digitalWrite(relay, HIGH);
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
-
-  ledcAttach(buzzer, 2000, BUZZER_RESOLUTION);
+  
   dht.setup(DHT_PIN, DHTesp::DHT11);
 
   lcd.setCursor(1, 0);
   lcd.print("System Loading");
 
   delay(2000);
-
-  playTone(659, 150); playTone(659, 150); delay(150);
-  playTone(659, 150); delay(150);
-  playTone(523, 150); playTone(659, 150); delay(150);
-  playTone(784, 150); delay(300);
-  playTone(392, 150);
 
   lcd.clear();
 
@@ -223,7 +218,7 @@ void setup()
     Blynk.virtualWrite(V9, "☀ Không mưa"); // mặc định khi khởi động
     Blynk.virtualWrite(V5, 0);   // ← THÊM: nút đóng tắt
     Blynk.virtualWrite(V4, 0);   // ← THÊM: nút mở sẵn sàng
-    Blynk.virtualWrite(V7, 2);   // ← THÊM: hiển thị trạng thái CLOSED
+    Blynk.virtualWrite(V7, 1);   // ← THÊM: hiển thị trạng thái OPEN
   }
   else
   {

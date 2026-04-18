@@ -1,8 +1,8 @@
-#include <EEPROM.h> //Tên wifi và mật khẩu lưu vào ô nhớ 0->96
+#include <EEPROM.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
-#include <WebServer.h> //Thêm thư viện web server
-WebServer webServer(80); //Khởi tạo đối tượng webServer port 80
+#include <WebServer.h>
+WebServer webServer(80);
 #include <Ticker.h>
 Ticker blinker;
 
@@ -10,465 +10,640 @@ String ssid;
 String password;
 #define ledPin 2
 #define btnPin 0
-unsigned long lastTimePress=millis();
+unsigned long lastTimePress = millis();
 #define PUSHTIME 5000
-int wifiMode; //0:Chế độ cấu hình, 1:Chế độ kết nối, 2: Mất wifi
-unsigned long blinkTime=millis();
-//Tạo biến chứa mã nguồn trang web HTML để hiển thị trên trình duyệt
-const char html[] PROGMEM = R"html( 
-  <!doctype html>
-  <html>
-    <head lang="vi">
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>Thiết bị tưới cây thông minh</title>
+int wifiMode;
+unsigned long blinkTime = millis();
 
-      <style>
-        body {
-          margin: 0;
-          font-family: Arial, sans-serif;
-          background: linear-gradient(135deg, #4caf50, #81c784);
-          height: 100vh;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-        }
+bool needReconnect = false;
+unsigned long reconnectTime = 0;
+#define RECONNECT_DELAY 3000
 
-        .container {
-          background: white;
-          padding: 25px;
-          border-radius: 15px;
-          box-shadow: 0 8px 25px rgba(0, 0, 0, 0.2);
-          text-align: center;
-        }
+const char html[] PROGMEM = R"html(
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Tưới Cây Thông Minh</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;1,9..144,300&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-        h2 {
-          margin-bottom: 10px;
-          color: #2e7d32;
-        }
+    :root {
+      --soil:      #3d2b1f;
+      --leaf:      #2d5a27;
+      --leaf-mid:  #4a8c3f;
+      --leaf-lite: #7abf6e;
+      --cream:     #f5f0e8;
+      --mist:      #e8f0e3;
+      --rust:      #c0392b;
+      --sun:       #e8a020;
+      --text:      #1a1a1a;
+      --text-sub:  #5a5a5a;
+      --card-bg:   rgba(255,255,255,0.82);
+      --border:    rgba(45,90,39,0.18);
+      --shadow:    0 8px 40px rgba(45,90,39,0.13);
+      --radius:    16px;
+    }
 
-        p {
-          font-size: 14px;
-          color: gray;
-        }
+    html, body {
+      min-height: 100vh;
+      font-family: 'DM Mono', monospace;
+      background: var(--cream);
+      color: var(--text);
+      overflow-x: hidden;
+    }
 
-        label {
-          font-size: 14px;
-          display: block;
-          text-align: left;
-          margin-top: 10px;
-        }
+    body::before, body::after {
+      content: '';
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(80px);
+      z-index: 0;
+      pointer-events: none;
+    }
+    body::before {
+      width: 520px; height: 520px;
+      background: radial-gradient(circle, #b5d9a8 0%, transparent 70%);
+      top: -120px; right: -120px;
+      opacity: 0.55;
+    }
+    body::after {
+      width: 400px; height: 400px;
+      background: radial-gradient(circle, #d4e8c2 0%, transparent 70%);
+      bottom: -80px; left: -80px;
+      opacity: 0.45;
+    }
 
-        select,
-        input {
-          width: 100%;
-          height: 40px;
-          margin-top: 5px;
-          margin-bottom: 10px;
-          padding: 0 10px;
+    .page {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+    }
 
-          border-radius: 8px;
-          border: 1px solid #ccc;
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1.5px solid var(--border);
+      border-radius: 24px;
+      box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,0.7);
+      padding: 36px 32px 32px;
+      width: 100%;
+      max-width: 420px;
+      animation: slideUp 0.55s cubic-bezier(0.16,1,0.3,1) both;
+    }
 
-          font-size: 16px;
-          box-sizing: border-box;
-        }
+    @keyframes slideUp {
+      from { opacity:0; transform: translateY(28px); }
+      to   { opacity:1; transform: translateY(0); }
+    }
 
-        button {
-          width: 48%;
-          height: 40px;
-          margin-top: 15px;
-          border: none;
-          border-radius: 8px;
-          color: white;
-          cursor: pointer;
-          font-weight: bold;
-          transition: all 0.2s ease;
-        }
+    .header { text-align: center; margin-bottom: 28px; }
 
-        .password-box {
-          position: relative;
-          width: 100%;
-        }
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 62px; height: 62px;
+      background: linear-gradient(135deg, var(--leaf) 0%, var(--leaf-mid) 60%, var(--leaf-lite) 100%);
+      border-radius: 18px;
+      margin-bottom: 14px;
+      box-shadow: 0 4px 20px rgba(45,90,39,0.28);
+      position: relative;
+      overflow: hidden;
+    }
+    .logo::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, transparent 60%);
+    }
+    .logo svg { width: 32px; height: 32px; z-index: 1; }
 
-        .password-box input {
-          width: 100%;
-          height: 40px;
-          padding: 0 40px 0 10px;
-          border-radius: 8px;
-          border: 1px solid #ccc;
-          font-size: 16px;
-          box-sizing: border-box;
-        }
+    .title {
+      font-family: 'Fraunces', serif;
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--soil);
+      letter-spacing: -0.3px;
+      line-height: 1.2;
+    }
+    .subtitle {
+      font-size: 11px;
+      color: var(--text-sub);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
 
-        /* icon con mắt */
-        .toggle-pass {
-          position: absolute;
-          right: 10px;
-          top: 50%;
-          transform: translateY(-50%);
-          cursor: pointer;
-          font-size: 18px;
-          color: #777;
-          transition: 0.2s;
-        }
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--mist);
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      padding: 8px 14px;
+      font-size: 12px;
+      color: var(--text-sub);
+      margin-bottom: 24px;
+      min-height: 38px;
+      transition: all 0.3s ease;
+    }
+    .status-pill .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--sun);
+      flex-shrink: 0;
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    .status-pill.ok  .dot { background: var(--leaf-mid); animation: none; }
+    .status-pill.err .dot { background: var(--rust);     animation: none; }
+    .status-pill.idle .dot{ background: #aaa;            animation: none; }
 
-        .toggle-pass:hover {
-          color: #4caf50;
-        }
+    @keyframes pulse {
+      0%,100% { opacity:1; transform:scale(1); }
+      50%      { opacity:0.5; transform:scale(1.35); }
+    }
 
-        .btn-save {
-          background: #4caf50;
-        }
+    .field { margin-bottom: 16px; }
+    .field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--text-sub);
+      margin-bottom: 6px;
+    }
 
-        .btn-restart {
-          background: #f44336;
-        }
+    .field select,
+    .field input[type="password"],
+    .field input[type="text"] {
+      width: 100%;
+      height: 46px;
+      padding: 0 14px;
+      background: rgba(255,255,255,0.9);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius);
+      font-family: 'DM Mono', monospace;
+      font-size: 13.5px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    .field select:focus,
+    .field input:focus {
+      border-color: var(--leaf-mid);
+      box-shadow: 0 0 0 3px rgba(74,140,63,0.13);
+    }
 
-        .btn-save:hover,
-        .btn-restart:hover {
-          transform: translateY(-1px);
-          box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-        }
+    .select-wrap { position: relative; }
+    .select-wrap::after {
+      content: '';
+      position: absolute;
+      right: 14px; top: 50%;
+      transform: translateY(-50%);
+      width: 0; height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 6px solid var(--leaf);
+      pointer-events: none;
+    }
 
-        .status {
-          margin-top: 10px;
-          font-size: 13px;
-          color: #555;
-        }
+    .pass-wrap { position: relative; }
+    .pass-wrap input { padding-right: 46px; }
+    .pass-toggle {
+      position: absolute;
+      right: 14px; top: 50%;
+      transform: translateY(-50%);
+      background: none; border: none;
+      cursor: pointer; padding: 4px;
+      color: var(--text-sub);
+      font-size: 17px; line-height: 1;
+      transition: color 0.2s;
+    }
+    .pass-toggle:hover { color: var(--leaf); }
 
-        .loading {
-          color: orange;
-          font-weight: bold;
-        }
-      </style>
-    </head>
+    .divider { height: 1px; background: var(--border); margin: 20px 0; }
 
-    <body>
-      <div class="container">
-        <h2>🌱 Hệ thống tưới cây thông minh</h2>
-        <p id="info" class="loading">🔎 Đang tìm WiFi...</p>
+    .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
-        <label>Tên WiFi</label>
-        <select id="ssid">
-          <option>Loading...</option>
-        </select>
+    .btn {
+      height: 46px;
+      border: none;
+      border-radius: var(--radius);
+      font-family: 'DM Mono', monospace;
+      font-size: 12.5px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+      display: flex; align-items: center; justify-content: center; gap: 7px;
+    }
+    .btn:active { transform: scale(0.97); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
-        <label>Password</label>
+    .btn-primary {
+      background: linear-gradient(135deg, var(--leaf) 0%, var(--leaf-mid) 100%);
+      color: #fff;
+      box-shadow: 0 4px 16px rgba(45,90,39,0.25);
+    }
+    .btn-primary:hover:not(:disabled) {
+      box-shadow: 0 6px 22px rgba(45,90,39,0.35);
+      transform: translateY(-1px);
+    }
 
-        <div class="password-box">
-          <input id="password" type="password" placeholder="Enter password" />
-          <span class="toggle-pass" onclick="togglePassword()">👁️</span>
-        </div>
+    .btn-danger {
+      background: rgba(192,57,43,0.08);
+      color: var(--rust);
+      border: 1.5px solid rgba(192,57,43,0.22);
+    }
+    .btn-danger:hover:not(:disabled) {
+      background: rgba(192,57,43,0.14);
+      transform: translateY(-1px);
+    }
 
-        <div style="display: flex; justify-content: space-between">
-          <button class="btn-save" onclick="saveWifi()">LƯU</button>
-          <button class="btn-restart" onclick="reStart()">KHỞI ĐỘNG LẠI</button>
-        </div>
+    .btn-scan {
+      width: 100%;
+      height: 38px;
+      margin-top: 6px;
+      background: rgba(74,140,63,0.09);
+      color: var(--leaf);
+      border: 1.5px solid rgba(74,140,63,0.22);
+      border-radius: 10px;
+      font-family: 'DM Mono', monospace;
+      font-size: 11.5px;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.15s;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .btn-scan:hover { background: rgba(74,140,63,0.16); transform: translateY(-1px); }
+    .btn-scan:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
-        <div id="status" class="status"></div>
+    .footer-note {
+      text-align: center;
+      font-size: 10.5px;
+      color: #aaa;
+      margin-top: 18px;
+      letter-spacing: 0.04em;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 13px; height: 13px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+    .spinner.dark {
+      border-color: rgba(45,90,39,0.25);
+      border-top-color: var(--leaf);
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 400px) {
+      .card { padding: 28px 20px 24px; }
+      .title { font-size: 19px; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+  <div class="card">
+
+    <div class="header">
+      <div class="logo">
+        <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M16 28 C16 28 6 22 6 13 C6 8 10.5 4 16 4 C21.5 4 26 8 26 13 C26 22 16 28 16 28Z" fill="rgba(255,255,255,0.3)"/>
+          <path d="M16 28 C16 20 10 16 7 12" stroke="rgba(255,255,255,0.6)" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M16 28 C16 20 22 16 25 12" stroke="rgba(255,255,255,0.6)" stroke-width="1.5" stroke-linecap="round"/>
+          <circle cx="16" cy="24" r="2" fill="rgba(255,255,255,0.5)"/>
+        </svg>
       </div>
+      <div class="title">Tưới Cây Thông Minh</div>
+      <div class="subtitle">Cấu hình kết nối WiFi</div>
+    </div>
 
-      <script type="text/javascript">
-        function togglePassword() {
-          var input = document.getElementById("password");
-          var icon = document.querySelector(".toggle-pass");
+    <div class="status-pill" id="statusPill">
+      <span class="dot"></span>
+      <span id="statusText">Đang khởi động...</span>
+    </div>
 
-          if (input.type === "password") {
-            input.type = "text";
-            icon.innerHTML = "🙈";
-          } else {
-            input.type = "password";
-            icon.innerHTML = "👁️";
-          }
-        }
-        window.onload = function () {
-          scanWifi();
-        };
-        var xhttp = new XMLHttpRequest();
-        function scanWifi() {
-          var xhr = new XMLHttpRequest(); // 🔥 tạo riêng
+    <div class="field">
+      <label>Mạng WiFi</label>
+      <div class="select-wrap">
+        <select id="ssid">
+          <option value="">-- Chọn mạng WiFi --</option>
+        </select>
+      </div>
+      <button class="btn-scan" id="btnScan" onclick="scanWifi()">
+        <span id="scanIcon">⟳</span>
+        <span id="scanText">Quét lại danh sách</span>
+      </button>
+    </div>
 
-          xhr.onreadystatechange = function () {
-            if (xhr.readyState == 4 && xhr.status == 200) {
-              let data = xhr.responseText;
+    <div class="field">
+      <label>Mật khẩu</label>
+      <div class="pass-wrap">
+        <input id="password" type="password" placeholder="Nhập mật khẩu WiFi..."/>
+        <button class="pass-toggle" type="button" onclick="togglePassword()" id="eyeBtn">👁</button>
+      </div>
+    </div>
 
-              document.getElementById("info").innerHTML =
-                "✅ WiFi scan completed!";
+    <div class="divider"></div>
 
-              let obj = JSON.parse(data);
-              let select = document.getElementById("ssid");
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btnSave" onclick="saveWifi()">
+        <span id="saveIcon">💾</span>
+        <span id="saveText">Lưu & Kết nối</span>
+      </button>
+      <button class="btn btn-danger" onclick="reStart()">
+        ↺ Khởi động lại
+      </button>
+    </div>
 
-              select.innerHTML = ""; // 🔥 clear trước
+  </div>
+  <div class="footer-note">ESP32 · PlantWater v2.0</div>
+</div>
 
-              for (let i = 0; i < obj.length; ++i) {
-                select[select.length] = new Option(obj[i], obj[i]);
-              }
-            }
-          };
+<script>
+  const pill    = document.getElementById('statusPill');
+  const pillTxt = document.getElementById('statusText');
+  const btnSave = document.getElementById('btnSave');
+  const btnScan = document.getElementById('btnScan');
 
-          xhr.open("GET", "/scanWifi", true);
-          xhr.send();
-        }
-        function saveWifi() {
-          var ssid = document.getElementById("ssid").value;
-          var pass = document.getElementById("password").value;
+  function setStatus(msg, type) {
+    pillTxt.textContent = msg;
+    pill.className = 'status-pill ' + (type || '');
+  }
 
-          var xhr = new XMLHttpRequest();
-                  
-          xhr.onreadystatechange = function () {
-            document.getElementById("info").innerHTML = 
-            "⏳ ESP32 đang kết nối đến Wifi: " + ssid;
-            if (xhr.readyState == 4 && xhr.status == 200) {
-              if (xhr.responseText == "OK") {
-                document.getElementById("password").value = "";
-                document.getElementById("ssid").selectedIndex = 0;
+  function setSaving(on) {
+    btnSave.disabled = on;
+    document.getElementById('saveIcon').innerHTML = on ? '<span class="spinner"></span>' : '💾';
+    document.getElementById('saveText').textContent = on ? 'Đang kết nối...' : 'Lưu & Kết nối';
+  }
 
-                document.getElementById("info").innerHTML =
-                  "✅ Kết nối thành công! ESP sẽ restart...";
-                setTimeout(() => reStart(), 1000);
-              } else {
-                document.getElementById("info").innerHTML =
-                  "❌ Sai mật khẩu hoặc không kết nối được!";
-              }
-            }
-          };
+  function setScanning(on) {
+    btnScan.disabled = on;
+    document.getElementById('scanIcon').innerHTML = on ? '<span class="spinner dark"></span>' : '⟳';
+    document.getElementById('scanText').textContent = on ? 'Đang quét...' : 'Quét lại danh sách';
+  }
 
-          xhr.open("GET", "/saveWifi?ssid=" + ssid + "&pass=" + pass, true);
-          xhr.send();
-        }
+  function togglePassword() {
+    const inp = document.getElementById('password');
+    const btn = document.getElementById('eyeBtn');
+    if (inp.type === 'password') { inp.type = 'text';     btn.textContent = '🙈'; }
+    else                         { inp.type = 'password'; btn.textContent = '👁';  }
+  }
 
-        function checkESP(){
-          var xhr = new XMLHttpRequest(); // 🔥 riêng
+  window.onload = scanWifi;
 
-          xhr.onreadystatechange = function(){
-            if(xhr.readyState==4){
-              if(xhr.status==200){
-                document.getElementById("info").innerHTML = "✅ ESP đã khởi động lại thành công!";
-              }else{
-                setTimeout(checkESP, 1000);
-              }
-            }
-          }
+  function scanWifi() {
+    setScanning(true);
+    setStatus('Đang quét mạng WiFi...', '');
+    const xhr = new XMLHttpRequest();
+    xhr.timeout = 20000;
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      setScanning(false);
+      if (xhr.status === 200) {
+        const list = JSON.parse(xhr.responseText);
+        const sel  = document.getElementById('ssid');
+        sel.innerHTML = '<option value="">-- Chọn mạng WiFi --</option>';
+        list.forEach(function(n) {
+          const opt = document.createElement('option');
+          opt.value = opt.textContent = n;
+          sel.appendChild(opt);
+        });
+        setStatus('Tìm thấy ' + list.length + ' mạng WiFi', 'ok');
+      } else {
+        setStatus('Quét thất bại — nhấn quét lại', 'err');
+      }
+    };
+    xhr.open('GET', '/scanWifi', true);
+    xhr.send();
+  }
 
-          xhr.open("GET","/",true);
-          xhr.send();
-        }
+  function saveWifi() {
+    const ssid = document.getElementById('ssid').value;
+    const pass = document.getElementById('password').value;
+    if (!ssid) { setStatus('Vui lòng chọn mạng WiFi', 'err'); return; }
+    setSaving(true);
+    setStatus('Đang kết nối đến: ' + ssid, '');
+    const xhr = new XMLHttpRequest();
+    xhr.timeout = 30000;
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      setSaving(false);
+      if (xhr.status === 200 && xhr.responseText === 'OK') {
+        setStatus('Kết nối thành công! Đang khởi động lại...', 'ok');
+        setTimeout(reStart, 1500);
+      } else {
+        setStatus('Sai mật khẩu hoặc không kết nối được', 'err');
+      }
+    };
+    xhr.open('GET', '/saveWifi?ssid=' + encodeURIComponent(ssid) + '&pass=' + encodeURIComponent(pass), true);
+    xhr.send();
+  }
 
-        function reStart(){
-          var xhr = new XMLHttpRequest(); // 🔥 riêng
+  function checkESP() {
+    const xhr = new XMLHttpRequest();
+    xhr.timeout = 3000;
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState === 4) {
+        if (xhr.status === 200) setStatus('ESP đã khởi động lại thành công', 'ok');
+        else setTimeout(checkESP, 1500);
+      }
+    };
+    xhr.open('GET', '/', true);
+    xhr.send();
+  }
 
-          xhr.onreadystatechange = function(){
-            if(xhr.readyState==4){
-              document.getElementById("info").innerHTML = "🔄️ ESP đang khởi động lại...";
-              setTimeout(checkESP, 2000);
-            }
-          }
-
-          xhr.open("GET","/reStart",true);
-          xhr.send();
-        }
-      </script>
-    </body>
-  </html>
+  function reStart() {
+    setStatus('Đang khởi động lại ESP32...', '');
+    const xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState === 4) setTimeout(checkESP, 3000);
+    };
+    xhr.open('GET', '/reStart', true);
+    xhr.send();
+  }
+</script>
+</body>
+</html>
 )html";
 
-void blinkLed(uint32_t t){
-  if(millis()-blinkTime>t){
-    digitalWrite(ledPin,!digitalRead(ledPin));
-    blinkTime=millis();
+void blinkLed(uint32_t t) {
+  if (millis() - blinkTime > t) {
+    digitalWrite(ledPin, !digitalRead(ledPin));
+    blinkTime = millis();
   }
 }
 
-void ledControl(){
-  if(digitalRead(btnPin)==LOW){
-    if(millis()-lastTimePress<PUSHTIME){
-      blinkLed(1000);
-    }else{
-      blinkLed(50);
-    }
-  }else{
-    if(wifiMode==0){
-      blinkLed(50);
-    }else if(wifiMode==1){
-      blinkLed(3000);
-    }else if(wifiMode==2){
-      blinkLed(300);
-    }
+void ledControl() {
+  if (digitalRead(btnPin) == LOW) {
+    if (millis() - lastTimePress < PUSHTIME) blinkLed(1000);
+    else blinkLed(50);
+  } else {
+    if      (wifiMode == 0) blinkLed(50);
+    else if (wifiMode == 1) blinkLed(3000);
+    else if (wifiMode == 2) blinkLed(300);
   }
-} 
+}
 
-//Chương trình xử lý sự kiện wifi
 void WiFiEvent(WiFiEvent_t event) {
   switch (event) {
-
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       Serial.println("Connected to WiFi");
-      Serial.print("IP Address: ");
-      Serial.println(WiFi.localIP());
-
-      wifiMode = 1; // ✅ đã kết nối thành công
+      Serial.print("IP: "); Serial.println(WiFi.localIP());
+      wifiMode = 1;
+      needReconnect = false;
       break;
-
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      Serial.println("Disconnected from WiFi");
-
-      wifiMode = 2; // 🔄 đang reconnect
-
-      WiFi.begin(ssid.c_str(), password.c_str());
+      Serial.println("WiFi disconnected");
+      wifiMode = 2;
+      if (ssid != "") { needReconnect = true; reconnectTime = millis(); }
       break;
-
-    default:
-      break;
+    default: break;
   }
 }
 
-void setupWifi(){
+void setupWifi() {
   Serial.println("Starting WiFi...");
-
-  // 🔥 Luôn bật cả 2 mode
   WiFi.mode(WIFI_AP_STA);
+  WiFi.onEvent(WiFiEvent);
 
-  // 🔥 Tạo AP (luôn có)
-  uint8_t macAddr[6];
-  WiFi.softAPmacAddress(macAddr);
-  String ssid_ap = "ESP32-" + String(macAddr[4], HEX) + String(macAddr[5], HEX);
-  ssid_ap.toUpperCase();
+  uint8_t mac[6];
+  WiFi.softAPmacAddress(mac);
+  String ap = "ESP32-" + String(mac[4], HEX) + String(mac[5], HEX);
+  ap.toUpperCase();
+  WiFi.softAP(ap.c_str());
+  Serial.println("AP: " + ap + " | IP: " + WiFi.softAPIP().toString());
 
-  WiFi.softAP(ssid_ap.c_str());
-
-  Serial.println("Access point name: " + ssid_ap);
-  Serial.println("AP IP: " + WiFi.softAPIP().toString());
-
-  // 🔥 Nếu có WiFi đã lưu → kết nối thêm STA
-  if(ssid != ""){
-    Serial.println("Connecting to WiFi: " + ssid);
-
+  if (ssid != "") {
+    Serial.println("Connecting: " + ssid);
     WiFi.begin(ssid.c_str(), password.c_str());
-    WiFi.onEvent(WiFiEvent);
-
-    wifiMode = 2; // đang thử kết nối
+    wifiMode = 2;
   } else {
-    Serial.println("No saved WiFi → AP only mode");
+    Serial.println("No saved WiFi");
     wifiMode = 0;
   }
 }
 
-void setupWebServer(){
-  //Thiết lập xử lý các yêu cầu từ client(trình duyệt web)
-  webServer.on("/",[]{
-    webServer.send(200, "text/html", html); //Gửi nội dung HTML
+void setupWebServer() {
+  webServer.on("/", [] {
+    webServer.send(200, "text/html", html);
   });
-  webServer.on("/scanWifi",[]{
-    Serial.println("Scanning wifi network...!");
 
-    // 🔥 TẮT STA tạm để scan ổn định
-    WiFi.disconnect(true);
-    delay(100);
+  webServer.on("/scanWifi", [] {
+    Serial.println("Scanning...");
+    int nets = WiFi.scanNetworks(false, false);
+    DynamicJsonDocument doc(1024);
+    for (int i = 0; i < nets; ++i) {
+      String s = WiFi.SSID(i);
+      if (!s.length()) continue;
+      bool dup = false;
+      for (JsonVariant v : doc.as<JsonArray>())
+        if (v.as<String>() == s) { dup = true; break; }
+      if (!dup) doc.add(s);
+    }
+    String out; serializeJson(doc, out);
+    webServer.send(200, "application/json", out);
+  });
 
-    int wifi_nets = WiFi.scanNetworks();
+  webServer.on("/saveWifi", [] {
+    String st = webServer.arg("ssid");
+    String pt = webServer.arg("pass");
+    Serial.println("Save: " + st);
 
-    DynamicJsonDocument doc(512);
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.disconnect(false); delay(200);
+    WiFi.begin(st.c_str(), pt.c_str());
 
-    if(wifi_nets <= 0){
-      Serial.println("No WiFi found!");
+    unsigned long t = millis();
+    while (WiFi.status() != WL_CONNECTED && millis()-t < 12000) { delay(500); Serial.print("."); }
+    Serial.println();
+
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Retry...");
+      WiFi.disconnect(false); delay(500);
+      WiFi.begin(st.c_str(), pt.c_str());
+      t = millis();
+      while (WiFi.status() != WL_CONNECTED && millis()-t < 12000) { delay(500); Serial.print("."); }
+      Serial.println();
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      EEPROM.writeString(0, st); EEPROM.writeString(32, pt); EEPROM.commit();
+      ssid = st; password = pt; wifiMode = 1; needReconnect = false;
+      webServer.send(200, "text/plain", "OK");
     } else {
-      for(int i=0; i<wifi_nets; ++i){
-        Serial.println(WiFi.SSID(i));
-        doc.add(WiFi.SSID(i));
-      }
-    }
-
-    String wifiList = "";
-    serializeJson(doc, wifiList);
-
-    webServer.send(200,"application/json",wifiList);
-
-    // 🔥 connect lại nếu có wifi đã lưu
-    if(ssid != ""){
-      WiFi.begin(ssid.c_str(), password.c_str());
+      webServer.send(200, "text/plain", "FAIL");
+      if (ssid != "" && ssid != st) { WiFi.disconnect(false); delay(200); WiFi.begin(ssid.c_str(), password.c_str()); }
+      else WiFi.disconnect(true);
     }
   });
-  webServer.on("/saveWifi",[]{
-      String ssid_temp = webServer.arg("ssid");
-      String password_temp = webServer.arg("pass");
 
-      Serial.println("SSID:" + ssid_temp);
-      Serial.println("PASS:" + password_temp);
-
-      WiFi.mode(WIFI_AP_STA); // 🔥 GIỮ AP + KẾT NỐI STA
-      WiFi.begin(ssid_temp.c_str(), password_temp.c_str());
-
-      unsigned long start = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - start < 7000) {
-          delay(500);
-          Serial.print(".");
-      }
-
-      if (WiFi.status() == WL_CONNECTED) {
-          EEPROM.writeString(0, ssid_temp);
-          EEPROM.writeString(32, password_temp);
-          EEPROM.commit();
-
-          ssid = ssid_temp;
-          password = password_temp;
-
-          webServer.send(200, "text/plain", "OK");
-      } else {
-          webServer.send(200, "text/plain", "FAIL");
-
-          // 🔥 QUAN TRỌNG: ngắt thử kết nối sai
-          WiFi.disconnect(true);
-      }
+  webServer.on("/reStart", [] {
+    webServer.send(200, "text/plain", "OK");
+    webServer.client().stop();
+    delay(500); ESP.restart();
   });
-  webServer.on("/reStart",[]{
-      webServer.send(200,"text/plain","ESP restarting...");
-      webServer.client().stop();  // 🔥 đảm bảo gửi response xong
-      delay(1000);                // delay ngắn thôi
-      ESP.restart();
-  });
-  webServer.begin(); //Khởi chạy dịch vụ web server trên ESP32
+
+  webServer.begin();
 }
 
-void checkButton(){
-  if(digitalRead(btnPin)==LOW){
-    Serial.println("Press and hold for 5 seconds to reset to default!");
-    if(millis()-lastTimePress>PUSHTIME){
-      for(int i=0; i<100;i++){
-        EEPROM.write(i,0);
-      }
+void checkButton() {
+  if (digitalRead(btnPin) == LOW) {
+    if (millis() - lastTimePress > PUSHTIME) {
+      for (int i = 0; i < 100; i++) EEPROM.write(i, 0);
       EEPROM.commit();
-      Serial.println("EEPROM memory erased!");
-      delay(2000);
-      ESP.restart();
+      Serial.println("EEPROM cleared!");
+      delay(2000); ESP.restart();
     }
     delay(1000);
-  }else{
-    lastTimePress=millis();
+  } else {
+    lastTimePress = millis();
   }
 }
 
-class Config{
+class Config {
 public:
-  void begin(){
-    pinMode(ledPin,OUTPUT);
-    pinMode(btnPin,INPUT_PULLUP);
+  void begin() {
+    pinMode(ledPin, OUTPUT);
+    pinMode(btnPin, INPUT_PULLUP);
     blinker.attach_ms(50, ledControl);
     EEPROM.begin(100);
-    char ssid_temp[32], password_temp[64];
-    EEPROM.readString(0,ssid_temp, sizeof(ssid_temp));
-    EEPROM.readString(32,password_temp,sizeof(password_temp));
-    ssid = String(ssid_temp);
-    password = String(password_temp);
-    if(ssid!=""){
-      Serial.println("Wifi name:"+ssid);
-      Serial.println("Password:"+password);
-    }
-    setupWifi(); //Thiết lập wifi
+    char sb[32], pb[64];
+    EEPROM.readString(0, sb, sizeof(sb));
+    EEPROM.readString(32, pb, sizeof(pb));
+    ssid = String(sb); password = String(pb);
+    if (ssid != "") Serial.println("Saved WiFi: " + ssid);
+    setupWifi();
     setupWebServer();
   }
-  void run(){
+
+  void run() {
     checkButton();
-    webServer.handleClient(); // 🔥 bỏ điều kiện wifiMode
+    webServer.handleClient();
+    if (needReconnect && ssid != "" && millis()-reconnectTime >= RECONNECT_DELAY) {
+      Serial.println("[WiFi] Reconnecting: " + ssid);
+      WiFi.begin(ssid.c_str(), password.c_str());
+      needReconnect = false;
+      reconnectTime = millis();
+    }
   }
 } wifiConfig;
