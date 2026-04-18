@@ -30,9 +30,9 @@ char auth[] = BLYNK_AUTH_TOKEN;
 DHTesp dht;
 
 // ===== MODE + CONTROL =====
-bool manualMode = true;   // khởi động mặc định manual ON
+bool manualMode = true;
 bool manualActive = false;
-bool manualState = false; // bơm tắt
+bool manualState = false;
 unsigned long manualTime = 0;
 
 #define MANUAL_TIMEOUT 5000
@@ -42,20 +42,22 @@ bool pumpState = false;
 bool lastPumpState = false;
 
 // ===== MOTOR STATE =====
-int motorState = 0; // 0=stop, 1=trái(mở), 2=phải(đóng)
+int motorState = 0;
 
 // ===== DOOR STATE =====
-// 0 = chưa biết, 1 = đã mở, 2 = đã đóng
-int doorState = 0;
+int doorState = 2;  // Mặc định: đã đóng
 
 // ===== MOTOR TIMER =====
 bool motorTimerActive = false;
 unsigned long motorTimerStart = 0;
-#define MOTOR_DURATION 18000
+#define MOTOR_DURATION 6000
 
 // ===== RAIN STATE =====
 bool lastRainState = true;
 bool isRaining = false;
+
+// ===== SOIL THRESHOLD =====
+int soilThreshold = 30;
 
 // ===== HÀM ĐIỀU KHIỂN ĐỘNG CƠ =====
 void motorLeft()
@@ -80,15 +82,13 @@ void motorStop()
   motorTimerActive = false;
 }
 
-// ===== KÍCH HOẠT MOTOR + ĐẾM 17S =====
 void motorStartWithTimer(int direction)
 {
   if (direction == 1)
   {
     motorLeft();
     doorState = 1;
-    Serial.println("[MOTOR] Quay trái (MỞ) 17s");
-
+    Serial.println("[MOTOR] Quay trái (MỞ) 6s");
     Blynk.virtualWrite(V4, 1);
     Blynk.virtualWrite(V5, 0);
     Blynk.virtualWrite(V7, 1);
@@ -97,8 +97,7 @@ void motorStartWithTimer(int direction)
   {
     motorRight();
     doorState = 2;
-    Serial.println("[MOTOR] Quay phải (ĐÓNG) 17s");
-
+    Serial.println("[MOTOR] Quay phải (ĐÓNG) 6s");
     Blynk.virtualWrite(V5, 1);
     Blynk.virtualWrite(V4, 0);
     Blynk.virtualWrite(V7, 2);
@@ -108,7 +107,6 @@ void motorStartWithTimer(int direction)
   motorTimerStart = millis();
 }
 
-// ===== KIỂM TRA HẾT 17S =====
 void handleMotorTimer()
 {
   if (motorTimerActive)
@@ -116,21 +114,19 @@ void handleMotorTimer()
     if (millis() - motorTimerStart >= MOTOR_DURATION)
     {
       motorStop();
-      Serial.println("[MOTOR] Hết 17s → Dừng");
+      Serial.println("[MOTOR] Hết giờ → Dừng");
 
       if (doorState == 1)
       {
-        // Đã MỞ xong → chỉ cho bấm ĐÓNG (V5)
-        Blynk.virtualWrite(V4, 0); // tắt nút mở
-        Blynk.virtualWrite(V5, 0); // sẵn sàng cho bấm đóng
+        Blynk.virtualWrite(V4, 0);
+        Blynk.virtualWrite(V5, 0);
         Blynk.virtualWrite(V7, 1);
         Serial.println("[DOOR] Đã MỞ → chỉ cho bấm ĐÓNG");
       }
       else if (doorState == 2)
       {
-        // Đã ĐÓNG xong → chỉ cho bấm MỞ (V4)
-        Blynk.virtualWrite(V5, 0); // tắt nút đóng
-        Blynk.virtualWrite(V4, 0); // sẵn sàng cho bấm mở  ← vấn đề ở đây
+        Blynk.virtualWrite(V5, 0);
+        Blynk.virtualWrite(V4, 0);
         Blynk.virtualWrite(V7, 2);
         Serial.println("[DOOR] Đã ĐÓNG → chỉ cho bấm MỞ");
       }
@@ -138,17 +134,26 @@ void handleMotorTimer()
   }
 }
 
-// ===== LOGIC MƯA =====
 void handleRainMotor()
 {
   int rain = digitalRead(rainSensor);
-  isRaining = (rain == LOW);
+  bool currentRain = (rain == LOW);
+
+  // Cập nhật V9 khi trạng thái mưa thay đổi
+  if (currentRain != isRaining)
+  {
+    Blynk.virtualWrite(V9, currentRain ? "🌧 Đang mưa" : "☀ Không mưa");
+    Serial.print("[RAIN] Trạng thái thay đổi: ");
+    Serial.println(currentRain ? "Đang mưa" : "Không mưa");
+  }
+
+  isRaining = currentRain;
 
   if (rain == LOW && lastRainState == true)
   {
     if (!motorTimerActive && doorState != 2)
     {
-      Serial.println("[RAIN] Phát hiện mưa → Motor quay phải (ĐÓNG) 17s");
+      Serial.println("[RAIN] Phát hiện mưa → Motor quay phải (ĐÓNG) 6s");
       motorStartWithTimer(2);
     }
   }
@@ -156,7 +161,6 @@ void handleRainMotor()
   lastRainState = (rain == LOW) ? false : true;
 }
 
-// ===== HÀM PHÁT NHẠC =====
 void playTone(int freq, int duration)
 {
   ledcWriteTone(buzzer, freq);
@@ -180,7 +184,6 @@ void setup()
   pinMode(IN1, OUTPUT);
   pinMode(IN2, OUTPUT);
 
-  // Khởi động: bơm tắt
   digitalWrite(relay, HIGH);
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
@@ -193,17 +196,10 @@ void setup()
 
   delay(2000);
 
-  // 🎵 Mario intro
-  playTone(659, 150);
-  playTone(659, 150);
-  delay(150);
-  playTone(659, 150);
-  delay(150);
-  playTone(523, 150);
-  playTone(659, 150);
-  delay(150);
-  playTone(784, 150);
-  delay(300);
+  playTone(659, 150); playTone(659, 150); delay(150);
+  playTone(659, 150); delay(150);
+  playTone(523, 150); playTone(659, 150); delay(150);
+  playTone(784, 150); delay(300);
   playTone(392, 150);
 
   lcd.clear();
@@ -221,9 +217,13 @@ void setup()
     Blynk.connect();
     Serial.println("Blynk connected!");
 
-    // ✅ Khởi động: bơm tắt, chế độ manual ON
-    Blynk.virtualWrite(V1, 0);  // bơm tắt
-    Blynk.virtualWrite(V6, 1);  // manual mode ON
+    Blynk.virtualWrite(V1, 0);
+    Blynk.virtualWrite(V6, 1);
+    Blynk.virtualWrite(V8, soilThreshold);
+    Blynk.virtualWrite(V9, "☀ Không mưa"); // mặc định khi khởi động
+    Blynk.virtualWrite(V5, 0);   // ← THÊM: nút đóng tắt
+    Blynk.virtualWrite(V4, 0);   // ← THÊM: nút mở sẵn sàng
+    Blynk.virtualWrite(V7, 2);   // ← THÊM: hiển thị trạng thái CLOSED
   }
   else
   {
@@ -248,32 +248,50 @@ void readSensors()
 
   lcd.clear();
 
-  // Dòng 0: Nhiệt độ
+  // ===== DÒNG 0: Nhiệt độ | Độ ẩm không khí =====
+  // "T:28.5C   Hum:65% "
   lcd.setCursor(0, 0);
-  lcd.print("Temp:");
+  lcd.print("T:");
   lcd.print(temperature, 1);
   lcd.print("C");
 
-  // Dòng 1: Độ ẩm đất
+  lcd.setCursor(10, 0);
+  lcd.print("Hum:");
+  lcd.print((int)humidity);
+  lcd.print("%");
+
+  // ===== DÒNG 1: Độ ẩm đất | Ngưỡng =====
+  // "Soil:45%  Thr:30% "
   lcd.setCursor(0, 1);
   lcd.print("Soil:");
   lcd.print(soil);
   lcd.print("%");
 
-  // Dòng 2: Mưa | Trạng thái cửa
+  lcd.setCursor(10, 1);
+  lcd.print("Thr:");
+  lcd.print(soilThreshold);
+  lcd.print("%");
+
+  // ===== DÒNG 2: Mưa | Trạng thái cửa =====
+  // "Rain:No   OPEN    "
   lcd.setCursor(0, 2);
-  lcd.print(rain == LOW ? "Rain  " : "NoRain");
+  lcd.print("Rain:");
+  lcd.print(rain == LOW ? "Yes" : "No ");
 
-  lcd.setCursor(8, 2);
+  lcd.setCursor(10, 2);
   if (motorTimerActive)
-    lcd.print(motorState == 1 ? "OPENING" : "CLOSING");
+    lcd.print(motorState == 1 ? "OPENING   " : "CLOSING   ");
   else
-    lcd.print(doorState == 1 ? "OPEN   " : doorState == 2 ? "CLOSED " : "UNKNOWN");
+    lcd.print(doorState == 1 ? "OPEN      " : doorState == 2 ? "CLOSED    " : "UNKNOWN   ");
 
-  // Dòng 3: Chế độ + bơm
+  // ===== DÒNG 3: Chế độ | Bơm =====
+  // "Mode:AUTO  P:OFF  "
   lcd.setCursor(0, 3);
-  lcd.print(manualMode ? "MODE: MAN " : "MODE: AUTO");
-  lcd.print(" Pump:");
+  lcd.print("Mode:");
+  lcd.print(manualMode ? "MAN" : "AUTO");
+
+  lcd.setCursor(10, 3);
+  lcd.print("Pump:");
   lcd.print(pumpState ? "ON " : "OFF");
 
   // ===== LOGIC BƠM =====
@@ -292,7 +310,7 @@ void readSensors()
     else
     {
       manualActive = false;
-      if (soil < 30 && rain == HIGH)
+      if (soil < soilThreshold && rain == HIGH)
       {
         digitalWrite(relay, LOW);
         pumpState = true;
@@ -309,6 +327,7 @@ void readSensors()
   Blynk.virtualWrite(V0, soil);
   Blynk.virtualWrite(V2, temperature);
   Blynk.virtualWrite(V3, humidity);
+  Blynk.virtualWrite(V9, isRaining ? "🌧 Đang mưa" : "☀ Không mưa");
 
   if (pumpState != lastPumpState)
   {
@@ -316,13 +335,11 @@ void readSensors()
     lastPumpState = pumpState;
   }
 
-  Serial.print("Temp: ");
-  Serial.print(temperature);
-  Serial.print(" | Hum: ");
-  Serial.print(humidity);
-  Serial.print(" | Soil: ");
-  Serial.print(soil);
-  Serial.print(" | Door: ");
+  Serial.print("Temp: "); Serial.print(temperature);
+  Serial.print(" | Hum: "); Serial.print(humidity);
+  Serial.print(" | Soil: "); Serial.print(soil);
+  Serial.print("% | Threshold: "); Serial.print(soilThreshold);
+  Serial.print("% | Door: ");
   Serial.print(doorState == 1 ? "OPEN" : doorState == 2 ? "CLOSED" : "UNKNOWN");
   Serial.print(" | Rain: ");
   Serial.println(isRaining ? "YES" : "NO");
@@ -348,7 +365,23 @@ BLYNK_WRITE(V1)
   pumpState = manualState;
 }
 
-// --- V4: Nút MỞ (motor quay trái) ---
+BLYNK_WRITE(V8)
+{
+  soilThreshold = param.asInt();
+  soilThreshold = constrain(soilThreshold, 0, 100);
+
+  Serial.print("[THRESHOLD] Ngưỡng mới: ");
+  Serial.print(soilThreshold);
+  Serial.println("%");
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Threshold set:");
+  lcd.setCursor(0, 1);
+  lcd.print(soilThreshold);
+  lcd.print("% soil moisture");
+}
+
 BLYNK_WRITE(V4)
 {
   if (param.asInt() != 1) return;
@@ -377,7 +410,6 @@ BLYNK_WRITE(V4)
   motorStartWithTimer(1);
 }
 
-// --- V5: Nút ĐÓNG (motor quay phải) ---
 BLYNK_WRITE(V5)
 {
   if (param.asInt() != 1) return;
@@ -399,10 +431,9 @@ BLYNK_WRITE(V5)
   motorStartWithTimer(2);
 }
 
-// --- V7: Hiển thị trạng thái (Label/Display) ---
 BLYNK_WRITE(V7)
 {
-  // Chỉ dùng để hiển thị, không nhận lệnh
+  // Chỉ hiển thị
 }
 
 // ================== LOOP ==================
